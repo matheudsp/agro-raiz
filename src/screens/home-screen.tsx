@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { useQuery } from "@tanstack/react-query";
 import { router } from "expo-router";
 import React, { useRef, useState } from "react";
 import {
@@ -15,11 +16,17 @@ import { tv } from "tailwind-variants";
 
 import { StandardScrollView } from "@/components/ui/screen-containers/standard-scroll-view";
 import { Typography } from "@/components/ui/typography";
+import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
 import { useThemeColors } from "@/hooks/use-theme-colors";
+import { useTRPC } from "@/lib/trpc";
+
+import type { Category } from "../../server/trpc/routers/categories";
+import type { Producer } from "../../server/trpc/routers/producers";
+import type { Product } from "../../server/trpc/routers/products";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
-// ─── Brand tokens (Agro Raiz specific, not in theme) ─────────────────────────
+// ─── Brand tokens ─────────────────────────────────────────────────────────────
 
 const BRAND = {
   dark: "#2D5A1B",
@@ -27,14 +34,7 @@ const BRAND = {
   soft: "#E8F5E2",
 } as const;
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
-
-const CATEGORIES = [
-  { id: "all", label: "Todos os\nprodutos", icon: "apps-outline" },
-  { id: "organic", label: "Orgânicos", icon: "flower-outline" },
-  { id: "fruits", label: "Frutas", icon: "nutrition-outline" },
-  { id: "vegetables", label: "Hortaliças", icon: "leaf-outline" },
-] as const;
+// ─── Static hero slides (editorial, not from API) ─────────────────────────────
 
 const HERO_SLIDES = [
   {
@@ -63,85 +63,22 @@ const HERO_SLIDES = [
   },
 ] as const;
 
-const PRODUCERS = [
-  {
-    id: "1",
-    name: "João Silva",
-    type: "Agricultor Familiar",
-    location: "Canavieira – PI",
-    rating: 4.9,
-    reviews: 128,
-    initials: "JS",
-    avatarBg: "#C8E6C9",
-  },
-  {
-    id: "2",
-    name: "Antônio Lima",
-    type: "Agricultor Familiar",
-    location: "Canavieira – PI",
-    rating: 4.8,
-    reviews: 96,
-    initials: "AL",
-    avatarBg: "#DCEDC8",
-  },
-  {
-    id: "3",
-    name: "Mulheres do Campo",
-    type: "Agricultoras Familiares",
-    location: "Canavieira – PI",
-    rating: 4.9,
-    reviews: 112,
-    initials: "MC",
-    avatarBg: "#F0F4C3",
-  },
-] as const;
+// ─── Tag display config (client-only, drives badges) ─────────────────────────
 
-type ProductTag = "Orgânico" | "Artesanal" | "Produção Local";
-
-const PRODUCTS: {
-  id: string;
-  name: string;
-  price: string;
-  unit: string;
-  tag: ProductTag;
-  emoji: string;
-  cardBg: string;
-}[] = [
-  {
-    id: "1",
-    name: "Alface Crespa Orgânica",
-    price: "R$ 4,00",
-    unit: "unid.",
-    tag: "Orgânico",
-    emoji: "🥬",
-    cardBg: "#E8F5E9",
-  },
-  { id: "2", name: "Frutas da Estação", price: "R$ 6,00", unit: "kg", tag: "Orgânico", emoji: "🍊", cardBg: "#FFF9C4" },
-  {
-    id: "3",
-    name: "Melado de Cana",
-    price: "R$ 10,00",
-    unit: "unid.",
-    tag: "Artesanal",
-    emoji: "🍯",
-    cardBg: "#FFF3E0",
-  },
-  {
-    id: "4",
-    name: "Feijão e Farinha",
-    price: "R$ 8,00",
-    unit: "kg",
-    tag: "Produção Local",
-    emoji: "🫘",
-    cardBg: "#EFEBE9",
-  },
-];
-
-const PRODUCT_TAG_CONFIG: Record<ProductTag, { bg: string; color: string; icon: string }> = {
+const PRODUCT_TAG_CONFIG: Record<string, { bg: string; color: string; icon: string }> = {
   Orgânico: { bg: "#E8F5E9", color: "#2E7D32", icon: "leaf" },
   Artesanal: { bg: "#FFF3E0", color: "#E65100", icon: "person" },
   "Produção Local": { bg: "#F3E5F5", color: "#6A1B9A", icon: "home" },
+  Agroecológico: { bg: "#E8F5E9", color: "#1B5E20", icon: "leaf" },
+  "Sem Agrotóxico": { bg: "#F1F8E9", color: "#33691E", icon: "leaf" },
 };
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Converts priceCents integer to a localised R$ string. */
+function formatPrice(cents: number) {
+  return (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
 
 // ─── Variants ─────────────────────────────────────────────────────────────────
 
@@ -166,6 +103,22 @@ const paginationDotVariants = tv({
   },
   defaultVariants: { active: false },
 });
+
+// ─── Skeleton ─────────────────────────────────────────────────────────────────
+
+function CardSkeleton({ width, height }: { width: number; height: number }) {
+  return <View style={{ width, height }} className="rounded-2xl bg-default opacity-60" />;
+}
+
+function HorizontalSkeletons({ cardWidth, cardHeight }: { cardWidth: number; cardHeight: number }) {
+  return (
+    <View className="flex-row gap-3 px-4">
+      {[1, 2, 3].map((i) => (
+        <CardSkeleton key={i} width={cardWidth} height={cardHeight} />
+      ))}
+    </View>
+  );
+}
 
 // ─── Header ───────────────────────────────────────────────────────────────────
 
@@ -225,6 +178,8 @@ function SearchBar() {
           onChangeText={setQuery}
           placeholder="Buscar produtos, produtores..."
           placeholderTextColor={colors.muted}
+          returnKeyType="search"
+          onSubmitEditing={() => router.push({ pathname: "/search", params: { q: query } })}
           style={{ flex: 1, fontSize: 14, color: colors.foreground, padding: 0 }}
         />
       </View>
@@ -310,17 +265,25 @@ function HeroCarousel() {
 
 // ─── Categories ───────────────────────────────────────────────────────────────
 
-function CategoriesGrid() {
-  const [selected, setSelected] = useState("all");
+function CategoriesGrid({
+  categories,
+  selectedId,
+  onSelect,
+}: {
+  categories: Category[];
+  selectedId: string;
+  onSelect: (id: string) => void;
+}) {
+  const all = [{ id: "all", label: "Todos os\nprodutos", icon: "apps-outline", slug: "all", color: "" }, ...categories];
 
   return (
     <View className="mt-5 flex-row flex-wrap gap-2.5 px-4">
-      {CATEGORIES.map((cat) => {
-        const isSelected = selected === cat.id;
+      {all.map((cat) => {
+        const isSelected = selectedId === cat.id;
         return (
           <TouchableOpacity
             key={cat.id}
-            onPress={() => setSelected(cat.id)}
+            onPress={() => onSelect(cat.id)}
             activeOpacity={0.8}
             className={categoryButtonVariants({ selected: isSelected })}
           >
@@ -360,9 +323,10 @@ function SectionHeader({ title, onPressAll }: { title: string; onPressAll: () =>
 
 // ─── Producer Card ────────────────────────────────────────────────────────────
 
-function ProducerCard({ producer }: { producer: (typeof PRODUCERS)[number] }) {
+function ProducerCard({ producer }: { producer: Producer }) {
   return (
     <TouchableOpacity
+      // onPress={() => router.push({ pathname: "/produtor/[id]", params: { id: producer.id } })}
       activeOpacity={0.85}
       className="w-[200px] overflow-hidden rounded-2xl border border-border bg-surface"
       style={{
@@ -399,11 +363,13 @@ function ProducerCard({ producer }: { producer: (typeof PRODUCERS)[number] }) {
         <View className="mt-1 flex-row items-center gap-1">
           <Ionicons name="star" size={12} color="#F59E0B" />
           <Typography variant="caption" style={{ fontWeight: "700", color: "#1A3A0A" }}>
-            {producer.rating}
+            {producer.rating > 0 ? producer.rating : "Novo"}
           </Typography>
-          <Typography variant="caption" tone="muted">
-            ({producer.reviews})
-          </Typography>
+          {producer.reviewCount > 0 && (
+            <Typography variant="caption" tone="muted">
+              ({producer.reviewCount})
+            </Typography>
+          )}
         </View>
       </View>
     </TouchableOpacity>
@@ -412,9 +378,10 @@ function ProducerCard({ producer }: { producer: (typeof PRODUCERS)[number] }) {
 
 // ─── Product Card ─────────────────────────────────────────────────────────────
 
-function ProductCard({ product }: { product: (typeof PRODUCTS)[number] }) {
+function ProductCard({ product }: { product: Product }) {
   const [favorited, setFavorited] = useState(false);
-  const tag = PRODUCT_TAG_CONFIG[product.tag];
+  const primaryTag = product.tags[0] ?? "";
+  const tag = PRODUCT_TAG_CONFIG[primaryTag] ?? { bg: "#F5F5F5", color: "#666", icon: "pricetag" };
 
   return (
     <TouchableOpacity
@@ -451,20 +418,22 @@ function ProductCard({ product }: { product: (typeof PRODUCTS)[number] }) {
           {product.name}
         </Typography>
         <Typography variant="small" style={{ color: BRAND.dark, fontWeight: "800", marginTop: 2 }}>
-          {product.price}{" "}
+          {formatPrice(product.priceCents)}{" "}
           <Typography variant="caption" tone="muted">
             / {product.unit}
           </Typography>
         </Typography>
-        <View
-          className="mt-1.5 flex-row items-center gap-1 self-start rounded-md px-2 py-0.5"
-          style={{ backgroundColor: tag.bg }}
-        >
-          <Ionicons name={tag.icon as any} size={11} color={tag.color} />
-          <Typography variant="caption" style={{ color: tag.color, fontWeight: "600" }}>
-            {product.tag}
-          </Typography>
-        </View>
+        {primaryTag ? (
+          <View
+            className="mt-1.5 flex-row items-center gap-1 self-start rounded-md px-2 py-0.5"
+            style={{ backgroundColor: tag.bg }}
+          >
+            <Ionicons name={tag.icon as any} size={11} color={tag.color} />
+            <Typography variant="caption" style={{ color: tag.color, fontWeight: "600" }}>
+              {primaryTag}
+            </Typography>
+          </View>
+        ) : null}
       </View>
     </TouchableOpacity>
   );
@@ -503,6 +472,34 @@ function TrustBanner() {
 
 export function HomeScreen() {
   const insets = useSafeAreaInsets();
+  const trpc = useTRPC();
+
+  const [selectedCategoryId, setSelectedCategoryId] = useState("all");
+
+  // ── Queries — mirror the tasks-screen pattern exactly ─────────────────────
+
+  const categoriesQueryOptions = trpc.categories.list.queryOptions();
+  const featuredProducersQueryOptions = trpc.producers.featured.queryOptions();
+  const featuredProductsQueryOptions = trpc.products.featured.queryOptions();
+
+  const filteredProductsQueryOptions = trpc.products.list.queryOptions(
+    selectedCategoryId === "all" ? {} : { categoryId: selectedCategoryId },
+  );
+
+  const { data: categories = [] } = useQuery(categoriesQueryOptions);
+  const { data: featuredProducers = [], isPending: producersPending } = useQuery(featuredProducersQueryOptions);
+  const { data: featuredProducts = [], isPending: featuredPending } = useQuery(featuredProductsQueryOptions);
+  const { data: filteredProducts = [], isPending: filteredPending } = useQuery(filteredProductsQueryOptions);
+
+  // ── Refresh on focus (same pattern as tasks-screen) ───────────────────────
+
+  useRefreshOnFocus(trpc.producers.featured.pathKey());
+  useRefreshOnFocus(trpc.products.featured.pathKey());
+
+  // ── Derived display data ──────────────────────────────────────────────────
+
+  const displayedProducts = selectedCategoryId === "all" ? featuredProducts : filteredProducts;
+  const productsPending = selectedCategoryId === "all" ? featuredPending : filteredPending;
 
   return (
     <View className="flex-1 bg-background">
@@ -512,32 +509,45 @@ export function HomeScreen() {
         <SearchBar />
       </View>
 
-      {/* Scrollable content — StandardScrollView handles bottom/side insets */}
+      {/* Scrollable content */}
       <StandardScrollView contentContainerClassName="pb-6">
+        {/* Hero carousel — static, always visible */}
         <HeroCarousel />
-        <CategoriesGrid />
 
-        <SectionHeader title="Produtores em destaque" onPressAll={() => {}} />
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
-        >
-          {PRODUCERS.map((p) => (
-            <ProducerCard key={p.id} producer={p} />
-          ))}
-        </ScrollView>
+        {/* Categories */}
+        <CategoriesGrid categories={categories} selectedId={selectedCategoryId} onSelect={setSelectedCategoryId} />
 
-        <SectionHeader title="Produtos em destaque" onPressAll={() => {}} />
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
-        >
-          {PRODUCTS.map((p) => (
-            <ProductCard key={p.id} product={p} />
-          ))}
-        </ScrollView>
+        {/* Produtores em destaque */}
+        <SectionHeader title="Produtores em destaque" onPressAll={() => router.push("/search")} />
+        {producersPending ? (
+          <HorizontalSkeletons cardWidth={200} cardHeight={190} />
+        ) : (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
+          >
+            {featuredProducers.map((p) => (
+              <ProducerCard key={p.id} producer={p} />
+            ))}
+          </ScrollView>
+        )}
+
+        {/* Produtos em destaque */}
+        <SectionHeader title="Produtos em destaque" onPressAll={() => router.push("/search")} />
+        {productsPending ? (
+          <HorizontalSkeletons cardWidth={158} cardHeight={220} />
+        ) : (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
+          >
+            {displayedProducts.map((p) => (
+              <ProductCard key={p.id} product={p} />
+            ))}
+          </ScrollView>
+        )}
 
         <TrustBanner />
       </StandardScrollView>

@@ -1,5 +1,5 @@
-import { TasksScreen } from "@/screens/tasks-screen";
+import { NewProductScreen } from "@/screens/new-product-screen";
 
 export default function Tasks() {
-  return <TasksScreen />;
+  return <NewProductScreen />;
 }

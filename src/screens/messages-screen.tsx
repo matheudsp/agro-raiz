@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { useQuery } from "@tanstack/react-query";
 import { router } from "expo-router";
 import React, { useState } from "react";
 import { TextInput, TouchableOpacity, View } from "react-native";
@@ -7,7 +8,12 @@ import { tv } from "tailwind-variants";
 
 import { StandardScrollView } from "@/components/ui/screen-containers/standard-scroll-view";
 import { Typography } from "@/components/ui/typography";
+import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
 import { useThemeColors } from "@/hooks/use-theme-colors";
+import { useTRPC } from "@/lib/trpc";
+
+import type { Conversation } from "../../server/trpc/routers/conversations";
+import type { Producer } from "../../server/trpc/routers/producers";
 
 // ─── Brand tokens ─────────────────────────────────────────────────────────────
 
@@ -17,106 +23,27 @@ const BRAND = {
   soft: "#E8F5E2",
 } as const;
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
+// TODO: replace with real auth session once auth is wired up
+const CURRENT_USER_ID = "buyer-1";
 
-type ConversationStatus = "online" | "offline" | "away";
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-type Conversation = {
-  id: string;
-  name: string;
-  role: string;
-  lastMessage: string;
-  time: string;
-  unread: number;
-  initials: string;
-  avatarBg: string;
-  status: ConversationStatus;
-  pinned?: boolean;
-};
+function formatMessageTime(iso: string): string {
+  const date = new Date(iso);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60_000);
+  const diffDays = Math.floor(diffMs / 86_400_000);
 
-const CONVERSATIONS: Conversation[] = [
-  {
-    id: "1",
-    name: "João Silva",
-    role: "Agricultor",
-    lastMessage: "Posso separar mais 5 unidades de alface pra você!",
-    time: "agora",
-    unread: 2,
-    initials: "JS",
-    avatarBg: "#C8E6C9",
-    status: "online",
-    pinned: true,
-  },
-  {
-    id: "2",
-    name: "Antônio Lima",
-    role: "Agricultor",
-    lastMessage: "O melado está fresquinho, colhido ontem 🍯",
-    time: "14:32",
-    unread: 1,
-    initials: "AL",
-    avatarBg: "#DCEDC8",
-    status: "online",
-    pinned: true,
-  },
-  {
-    id: "3",
-    name: "Mulheres do Campo",
-    role: "Cooperativa",
-    lastMessage: "Tudo bem! Seu pedido saiu para entrega.",
-    time: "11:05",
-    unread: 0,
-    initials: "MC",
-    avatarBg: "#F0F4C3",
-    status: "away",
-  },
-  {
-    id: "4",
-    name: "Maria Oliveira",
-    role: "Agricultora",
-    lastMessage: "Obrigada pela sua avaliação ⭐",
-    time: "ontem",
-    unread: 0,
-    initials: "MO",
-    avatarBg: "#FFE0B2",
-    status: "offline",
-  },
-  {
-    id: "5",
-    name: "Pedro Santos",
-    role: "Agricultor",
-    lastMessage: "Tenho tomate orgânico disponível essa semana.",
-    time: "seg",
-    unread: 0,
-    initials: "PS",
-    avatarBg: "#E1BEE7",
-    status: "offline",
-  },
-  {
-    id: "6",
-    name: "Lúcia Ferreira",
-    role: "Agricultora",
-    lastMessage: "Você: Pode me mandar o valor do frete?",
-    time: "sex",
-    unread: 0,
-    initials: "LF",
-    avatarBg: "#B2EBF2",
-    status: "offline",
-  },
-];
+  if (diffMins < 1) return "agora";
+  if (diffMins < 60) return `${diffMins}min`;
+  if (diffDays < 1) return date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  if (diffDays === 1) return "ontem";
+  if (diffDays < 7) return date.toLocaleDateString("pt-BR", { weekday: "short" });
+  return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+}
 
 // ─── Variants ─────────────────────────────────────────────────────────────────
-
-const statusDotVariants = tv({
-  base: "absolute right-0 bottom-0 h-3 w-3 rounded-full border-2 border-surface",
-  variants: {
-    status: {
-      online: "bg-success",
-      away: "bg-warning",
-      offline: "bg-border",
-    },
-  },
-});
 
 const filterChipVariants = tv({
   base: "rounded-full border px-4 py-1.5",
@@ -129,10 +56,14 @@ const filterChipVariants = tv({
   defaultVariants: { active: false },
 });
 
+// ─── Filter types ─────────────────────────────────────────────────────────────
+
+const FILTERS = ["Todas", "Não lidas", "Recentes"] as const;
+type Filter = (typeof FILTERS)[number];
+
 // ─── Search Bar ───────────────────────────────────────────────────────────────
 
-function SearchBar() {
-  const [query, setQuery] = useState("");
+function SearchBar({ query, onChangeText }: { query: string; onChangeText: (t: string) => void }) {
   const colors = useThemeColors();
 
   return (
@@ -140,13 +71,13 @@ function SearchBar() {
       <Ionicons name="search-outline" size={17} color={colors.muted} />
       <TextInput
         value={query}
-        onChangeText={setQuery}
+        onChangeText={onChangeText}
         placeholder="Buscar conversas..."
         placeholderTextColor={colors.muted}
         style={{ flex: 1, fontSize: 14, color: colors.foreground, padding: 0 }}
       />
       {query.length > 0 && (
-        <TouchableOpacity onPress={() => setQuery("")} activeOpacity={0.7}>
+        <TouchableOpacity onPress={() => onChangeText("")} activeOpacity={0.7}>
           <Ionicons name="close-circle" size={17} color={colors.muted} />
         </TouchableOpacity>
       )}
@@ -155,9 +86,6 @@ function SearchBar() {
 }
 
 // ─── Filter Chips ─────────────────────────────────────────────────────────────
-
-const FILTERS = ["Todas", "Não lidas", "Agricultores", "Pedidos"] as const;
-type Filter = (typeof FILTERS)[number];
 
 function FilterChips({ active, onSelect }: { active: Filter; onSelect: (f: Filter) => void }) {
   return (
@@ -186,8 +114,22 @@ function FilterChips({ active, onSelect }: { active: Filter; onSelect: (f: Filte
 
 // ─── Conversation Item ────────────────────────────────────────────────────────
 
-function ConversationItem({ conversation, onPress }: { conversation: Conversation; onPress: () => void }) {
-  const hasUnread = conversation.unread > 0;
+function ConversationItem({
+  conversation,
+  producer,
+  onPress,
+}: {
+  conversation: Conversation;
+  producer: Producer | undefined;
+  onPress: () => void;
+}) {
+  const hasUnread = conversation.unreadCount > 0;
+
+  // Derive display name and initials from producer if available
+  const displayName = producer?.name ?? "Carregando...";
+  const displayRole = producer?.type ?? "";
+  const displayInitials = producer?.initials ?? "?";
+  const avatarBg = producer?.avatarBg ?? "#E8F5E2";
 
   return (
     <TouchableOpacity
@@ -197,32 +139,27 @@ function ConversationItem({ conversation, onPress }: { conversation: Conversatio
     >
       {/* Avatar */}
       <View className="relative">
-        <View
-          className="h-14 w-14 items-center justify-center rounded-full"
-          style={{ backgroundColor: conversation.avatarBg }}
-        >
+        <View className="h-14 w-14 items-center justify-center rounded-full" style={{ backgroundColor: avatarBg }}>
           <Typography variant="bodyBold" style={{ color: BRAND.dark }}>
-            {conversation.initials}
+            {displayInitials}
           </Typography>
         </View>
-        <View className={statusDotVariants({ status: conversation.status })} />
+        {/* Online dot — shows for producers with recent activity (< 5 min) */}
+        {conversation.lastMessageAt && Date.now() - new Date(conversation.lastMessageAt).getTime() < 300_000 && (
+          <View className="absolute right-0 bottom-0 h-3 w-3 rounded-full border-2 border-surface bg-success" />
+        )}
       </View>
 
       {/* Content */}
       <View className="flex-1 gap-0.5">
         <View className="flex-row items-center justify-between">
-          <View className="flex-row items-center gap-1.5">
-            {conversation.pinned && (
-              <Ionicons name="pin" size={12} color={BRAND.mid} style={{ transform: [{ rotate: "45deg" }] }} />
-            )}
-            <Typography
-              variant={hasUnread ? "smallBold" : "small"}
-              style={{ color: hasUnread ? "#1A3A0A" : undefined }}
-              truncate
-            >
-              {conversation.name}
-            </Typography>
-          </View>
+          <Typography
+            variant={hasUnread ? "smallBold" : "small"}
+            style={{ color: hasUnread ? "#1A3A0A" : undefined }}
+            truncate
+          >
+            {displayName}
+          </Typography>
           <Typography
             variant="caption"
             style={{
@@ -230,13 +167,15 @@ function ConversationItem({ conversation, onPress }: { conversation: Conversatio
               fontWeight: hasUnread ? "700" : "400",
             }}
           >
-            {conversation.time}
+            {formatMessageTime(conversation.lastMessageAt)}
           </Typography>
         </View>
 
-        <Typography variant="caption" tone="muted" style={{ marginBottom: 1 }}>
-          {conversation.role}
-        </Typography>
+        {displayRole ? (
+          <Typography variant="caption" tone="muted" style={{ marginBottom: 1 }}>
+            {displayRole}
+          </Typography>
+        ) : null}
 
         <View className="flex-row items-center justify-between gap-2">
           <Typography
@@ -249,7 +188,7 @@ function ConversationItem({ conversation, onPress }: { conversation: Conversatio
               color: hasUnread ? "#3A4A38" : undefined,
             }}
           >
-            {conversation.lastMessage}
+            {conversation.lastMessage || "Iniciar conversa"}
           </Typography>
           {hasUnread && (
             <View
@@ -257,13 +196,28 @@ function ConversationItem({ conversation, onPress }: { conversation: Conversatio
               style={{ backgroundColor: BRAND.mid }}
             >
               <Typography variant="caption" style={{ color: "#FFFFFF", fontWeight: "700", fontSize: 11 }}>
-                {conversation.unread}
+                {conversation.unreadCount}
               </Typography>
             </View>
           )}
         </View>
       </View>
     </TouchableOpacity>
+  );
+}
+
+// ─── Skeleton row ─────────────────────────────────────────────────────────────
+
+function ConversationSkeleton() {
+  return (
+    <View className="flex-row items-center gap-3 border-b border-border bg-surface px-4 py-3.5">
+      <View className="h-14 w-14 rounded-full bg-default opacity-60" />
+      <View className="flex-1 gap-2">
+        <View className="h-4 w-2/3 rounded-lg bg-default opacity-60" />
+        <View className="h-3 w-1/3 rounded-lg bg-default opacity-50" />
+        <View className="h-3 w-3/4 rounded-lg bg-default opacity-40" />
+      </View>
+    </View>
   );
 }
 
@@ -287,7 +241,7 @@ function SectionLabel({ label }: { label: string }) {
 
 function EmptyState() {
   return (
-    <View className="flex-1 items-center justify-center gap-3 py-20">
+    <View className="items-center justify-center gap-3 py-20">
       <View className="h-20 w-20 items-center justify-center rounded-full" style={{ backgroundColor: BRAND.soft }}>
         <Ionicons name="chatbubbles-outline" size={36} color={BRAND.mid} />
       </View>
@@ -307,20 +261,56 @@ function EmptyState() {
 
 export function MessagesScreen() {
   const insets = useSafeAreaInsets();
+  const trpc = useTRPC();
+
   const [activeFilter, setActiveFilter] = useState<Filter>("Todas");
+  const [searchQuery, setSearchQuery] = useState("");
 
-  const pinned = CONVERSATIONS.filter((c) => c.pinned);
-  const recent = CONVERSATIONS.filter((c) => !c.pinned);
+  // ── Queries ───────────────────────────────────────────────────────────────
 
-  const filterConversations = (list: Conversation[]) => {
-    if (activeFilter === "Não lidas") return list.filter((c) => c.unread > 0);
-    if (activeFilter === "Agricultores") return list.filter((c) => c.role === "Agricultor" || c.role === "Agricultora");
-    return list;
+  const conversationsQueryOptions = trpc.conversations.list.queryOptions({
+    userId: CURRENT_USER_ID,
+  });
+  const { data: conversations = [], isPending } = useQuery(conversationsQueryOptions);
+
+  // Fetch all producers so we can hydrate display info for each conversation
+  const { data: producers = [] } = useQuery(trpc.producers.list.queryOptions());
+
+  // ── Refresh on focus ──────────────────────────────────────────────────────
+
+  useRefreshOnFocus(conversationsQueryOptions.queryKey);
+
+  // ── Derived data ──────────────────────────────────────────────────────────
+
+  const producersById = Object.fromEntries(producers.map((p) => [p.id, p])) as Record<string, Producer>;
+
+  const applyFilter = (list: Conversation[]): Conversation[] => {
+    switch (activeFilter) {
+      case "Não lidas":
+        return list.filter((c) => c.unreadCount > 0);
+      case "Recentes":
+        return [...list].sort((a, b) => b.lastMessageAt.localeCompare(a.lastMessageAt)).slice(0, 10);
+      default:
+        return list;
+    }
   };
 
-  const filteredPinned = filterConversations(pinned);
-  const filteredRecent = filterConversations(recent);
-  const isEmpty = filteredPinned.length === 0 && filteredRecent.length === 0;
+  const applySearch = (list: Conversation[]): Conversation[] => {
+    if (!searchQuery.trim()) return list;
+    const q = searchQuery.toLowerCase();
+    return list.filter((c) => {
+      const producer = producersById[c.producerId];
+      return producer?.name.toLowerCase().includes(q) || c.lastMessage.toLowerCase().includes(q);
+    });
+  };
+
+  const filteredConversations = applySearch(applyFilter(conversations));
+
+  // Split into unread-first (acts as "pinned") and rest
+  const unread = filteredConversations.filter((c) => c.unreadCount > 0);
+  const read = filteredConversations.filter((c) => c.unreadCount === 0);
+
+  const isEmpty = !isPending && filteredConversations.length === 0;
 
   return (
     <View className="flex-1 bg-background">
@@ -332,41 +322,51 @@ export function MessagesScreen() {
             <Ionicons name="create-outline" size={20} color="#1A3A0A" />
           </TouchableOpacity>
         </View>
-        <SearchBar />
+        <SearchBar query={searchQuery} onChangeText={setSearchQuery} />
         <FilterChips active={activeFilter} onSelect={setActiveFilter} />
       </View>
 
       {/* Scrollable content */}
       <StandardScrollView contentContainerClassName="pb-6">
-        {isEmpty ? (
-          <EmptyState />
-        ) : (
+        {/* Loading skeleton */}
+        {isPending && (
           <>
-            {filteredPinned.length > 0 && (
-              <View>
-                <SectionLabel label="Fixadas" />
-                {filteredPinned.map((c) => (
-                  <ConversationItem
-                    key={c.id}
-                    conversation={c}
-                    onPress={() => router.push({ pathname: "/chat/[id]", params: { id: c.id } })}
-                  />
-                ))}
-              </View>
-            )}
-            {filteredRecent.length > 0 && (
-              <View>
-                <SectionLabel label="Recentes" />
-                {filteredRecent.map((c) => (
-                  <ConversationItem
-                    key={c.id}
-                    conversation={c}
-                    onPress={() => router.push({ pathname: "/chat/[id]", params: { id: c.id } })}
-                  />
-                ))}
-              </View>
-            )}
+            {[1, 2, 3, 4].map((i) => (
+              <ConversationSkeleton key={i} />
+            ))}
           </>
+        )}
+
+        {/* Empty state */}
+        {isEmpty && <EmptyState />}
+
+        {/* Não lidas / com conteúdo */}
+        {!isPending && unread.length > 0 && (
+          <View>
+            <SectionLabel label="Não lidas" />
+            {unread.map((c) => (
+              <ConversationItem
+                key={c.id}
+                conversation={c}
+                producer={producersById[c.producerId]}
+                onPress={() => router.push({ pathname: "/chat/[id]", params: { id: c.id } })}
+              />
+            ))}
+          </View>
+        )}
+
+        {!isPending && read.length > 0 && (
+          <View>
+            {unread.length > 0 && <SectionLabel label="Lidas" />}
+            {read.map((c) => (
+              <ConversationItem
+                key={c.id}
+                conversation={c}
+                producer={producersById[c.producerId]}
+                onPress={() => router.push({ pathname: "/chat/[id]", params: { id: c.id } })}
+              />
+            ))}
+          </View>
         )}
       </StandardScrollView>
     </View>

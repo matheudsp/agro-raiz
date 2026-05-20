@@ -1,13 +1,20 @@
 import { Ionicons } from "@expo/vector-icons";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { router } from "expo-router";
-import React, { useRef, useState } from "react";
-import { TextInput, TouchableOpacity, View } from "react-native";
+import React, { useEffect, useRef, useState } from "react";
+import { ScrollView, TextInput, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { tv } from "tailwind-variants";
 
 import { StickyFooterFormScrollView } from "@/components/ui/screen-containers/sticky-footer-form-scroll-view";
 import { Typography } from "@/components/ui/typography";
+import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
 import { useThemeColors } from "@/hooks/use-theme-colors";
+import { useTRPC } from "@/lib/trpc";
+
+import type { Message } from "../../server/trpc/routers/conversations";
+import type { Order } from "../../server/trpc/routers/orders";
+import type { Producer } from "../../server/trpc/routers/producers";
 
 // ─── Brand tokens ─────────────────────────────────────────────────────────────
 
@@ -17,90 +24,27 @@ const BRAND = {
   soft: "#E8F5E2",
 } as const;
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// TODO: replace with real auth session
+const CURRENT_USER_ID = "buyer-1";
 
-type MessageKind = "text" | "product" | "order";
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-type Message = {
-  id: string;
-  from: "me" | "them";
-  kind: MessageKind;
-  text?: string;
-  time: string;
-  read?: boolean;
-  product?: { name: string; price: string; unit: string; emoji: string; cardBg: string };
-  order?: { id: string; status: string; items: string };
-};
+function formatTime(iso: string) {
+  return new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+}
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
+function formatOrderItems(order: Order): string {
+  return order.items
+    .map(
+      (i) =>
+        `${i.quantity}x ${i.productName} — ${(i.subtotal / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}`,
+    )
+    .join("\n");
+}
 
-const PRODUCER = {
-  name: "João Silva",
-  role: "Agricultor Familiar",
-  location: "Canavieira – PI",
-  initials: "JS",
-  avatarBg: "#C8E6C9",
-  status: "online" as const,
-  lastSeen: "agora",
-};
-
-const INITIAL_MESSAGES: Message[] = [
-  {
-    id: "1",
-    from: "them",
-    kind: "text",
-    text: "Olá! Vi que você se interessou pela alface orgânica. Ainda tenho 25 unidades disponíveis 🥬",
-    time: "14:10",
-  },
-  {
-    id: "2",
-    from: "me",
-    kind: "text",
-    text: "Oi João! Que ótimo. Qual o prazo de entrega para Canavieira?",
-    time: "14:12",
-    read: true,
-  },
-  {
-    id: "3",
-    from: "them",
-    kind: "text",
-    text: "Entrego amanhã cedo, antes das 8h. Fresquinha do dia! 😊",
-    time: "14:13",
-  },
-  {
-    id: "4",
-    from: "them",
-    kind: "product",
-    text: "Esse é o produto que temos disponível:",
-    time: "14:14",
-    product: { name: "Alface Crespa Orgânica", price: "R$ 4,00", unit: "unid.", emoji: "🥬", cardBg: "#E8F5E9" },
-  },
-  {
-    id: "5",
-    from: "me",
-    kind: "text",
-    text: "Perfeito! Vou querer 5 unidades então.",
-    time: "14:16",
-    read: true,
-  },
-  {
-    id: "6",
-    from: "them",
-    kind: "order",
-    text: "Pedido confirmado! Aqui está o resumo:",
-    time: "14:17",
-    order: { id: "#2847", status: "Confirmado", items: "5x Alface Crespa Orgânica — R$ 20,00" },
-  },
-  {
-    id: "7",
-    from: "them",
-    kind: "text",
-    text: "Posso separar mais 5 unidades de alface pra você!",
-    time: "14:20",
-  },
-];
-
-const DATE_LABEL = "Hoje";
+function formatOrderTotal(order: Order): string {
+  return (order.totalCents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
 
 // ─── Variants ─────────────────────────────────────────────────────────────────
 
@@ -126,7 +70,7 @@ const bubbleTextVariants = tv({
 
 // ─── Top Bar ──────────────────────────────────────────────────────────────────
 
-function TopBar({ producer }: { producer: typeof PRODUCER }) {
+function TopBar({ producer }: { producer: Producer | undefined }) {
   return (
     <View className="flex-row items-center gap-3 border-b border-border bg-surface px-4 py-3">
       <TouchableOpacity onPress={() => router.back()} activeOpacity={0.7} className="mr-1">
@@ -137,19 +81,19 @@ function TopBar({ producer }: { producer: typeof PRODUCER }) {
       <View className="relative">
         <View
           className="h-10 w-10 items-center justify-center rounded-full"
-          style={{ backgroundColor: producer.avatarBg }}
+          style={{ backgroundColor: producer?.avatarBg ?? "#E8F5E2" }}
         >
           <Typography variant="smallBold" style={{ color: BRAND.dark }}>
-            {producer.initials}
+            {producer?.initials ?? "?"}
           </Typography>
         </View>
         <View className="absolute right-0 bottom-0 h-2.5 w-2.5 rounded-full border-2 border-surface bg-success" />
       </View>
 
       {/* Info */}
-      <View className="flex-1 gap-0">
+      <View className="flex-1">
         <Typography variant="smallBold" style={{ color: "#1A3A0A" }}>
-          {producer.name}
+          {producer?.name ?? "Carregando..."}
         </Typography>
         <View className="flex-row items-center gap-1">
           <View className="h-1.5 w-1.5 rounded-full bg-success" />
@@ -188,10 +132,15 @@ function DateSeparator({ label }: { label: string }) {
 
 // ─── Product Bubble ───────────────────────────────────────────────────────────
 
-function ProductBubble({ product, from }: { product: NonNullable<Message["product"]>; from: "me" | "them" }) {
-  const isMe = from === "me";
+function ProductBubble({ productId, isMe }: { productId: string; isMe: boolean }) {
+  const trpc = useTRPC();
+  const { data: product } = useQuery(trpc.products.get.queryOptions({ id: productId }));
+
+  if (!product) return null;
+
   return (
     <TouchableOpacity
+      onPress={() => router.push({ pathname: "/product/[id]", params: { id: product.id } })}
       activeOpacity={0.85}
       className="overflow-hidden rounded-2xl border border-border bg-surface"
       style={{ width: 220, alignSelf: isMe ? "flex-end" : "flex-start" }}
@@ -204,7 +153,7 @@ function ProductBubble({ product, from }: { product: NonNullable<Message["produc
           {product.name}
         </Typography>
         <Typography variant="small" style={{ color: BRAND.dark, fontWeight: "800" }}>
-          {product.price}
+          {(product.priceCents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
           <Typography variant="caption" tone="muted">
             {" "}
             / {product.unit}
@@ -226,8 +175,21 @@ function ProductBubble({ product, from }: { product: NonNullable<Message["produc
 
 // ─── Order Bubble ─────────────────────────────────────────────────────────────
 
-function OrderBubble({ order, from }: { order: NonNullable<Message["order"]>; from: "me" | "them" }) {
-  const isMe = from === "me";
+function OrderBubble({ orderId, isMe }: { orderId: string; isMe: boolean }) {
+  const trpc = useTRPC();
+  const { data: order } = useQuery(trpc.orders.get.queryOptions({ id: orderId }));
+
+  if (!order) return null;
+
+  const STATUS_LABELS: Record<string, string> = {
+    pendente: "Pendente",
+    confirmado: "Confirmado",
+    preparando: "Preparando",
+    pronto: "Pronto",
+    entregue: "Entregue",
+    cancelado: "Cancelado",
+  };
+
   return (
     <View
       className="overflow-hidden rounded-2xl border border-border bg-surface"
@@ -236,19 +198,25 @@ function OrderBubble({ order, from }: { order: NonNullable<Message["order"]>; fr
       <View className="flex-row items-center gap-2 px-3 py-2.5" style={{ backgroundColor: BRAND.soft }}>
         <Ionicons name="receipt-outline" size={15} color={BRAND.mid} />
         <Typography variant="caption" style={{ color: BRAND.dark, fontWeight: "700" }}>
-          Pedido {order.id}
+          Pedido #{order.id.slice(0, 6)}
         </Typography>
         <View className="ml-auto rounded-full bg-success/20 px-2 py-0.5">
           <Typography variant="caption" style={{ color: "#1B5E20", fontWeight: "700" }}>
-            {order.status}
+            {STATUS_LABELS[order.status] ?? order.status}
           </Typography>
         </View>
       </View>
       <View className="gap-1 px-3 py-2.5">
         <Typography variant="caption" tone="muted">
-          {order.items}
+          {formatOrderItems(order)}
         </Typography>
-        <TouchableOpacity activeOpacity={0.7}>
+        <Typography variant="caption" style={{ color: BRAND.dark, fontWeight: "700" }}>
+          Total: {formatOrderTotal(order)}
+        </Typography>
+        <TouchableOpacity
+          // onPress={() => router.push({ pathname: "/order/[id]", params: { id: order.id } })}
+          activeOpacity={0.7}
+        >
           <Typography variant="caption" style={{ color: BRAND.mid, fontWeight: "600" }}>
             Ver detalhes →
           </Typography>
@@ -261,63 +229,58 @@ function OrderBubble({ order, from }: { order: NonNullable<Message["order"]>; fr
 // ─── Message Row ──────────────────────────────────────────────────────────────
 
 function MessageRow({ message }: { message: Message }) {
-  const isMe = message.from === "me";
+  const isMe = message.senderId === CURRENT_USER_ID;
+  const side = isMe ? "me" : "them";
 
   return (
     <View className={`mb-1.5 px-4 ${isMe ? "items-end" : "items-start"}`}>
-      {/* Optional text before special bubbles */}
-      {message.text && message.kind === "text" && (
-        <View className={bubbleVariants({ from: message.from })}>
-          <Typography variant="small" className={bubbleTextVariants({ from: message.from })} style={{ lineHeight: 20 }}>
+      {/* Text bubble */}
+      {message.kind === "text" && (
+        <View className={bubbleVariants({ from: side })}>
+          <Typography variant="small" className={bubbleTextVariants({ from: side })} style={{ lineHeight: 20 }}>
             {message.text}
           </Typography>
         </View>
       )}
 
-      {message.kind === "product" && message.product && (
+      {/* Product card */}
+      {message.kind === "product" && (
         <View className={`gap-1.5 ${isMe ? "items-end" : "items-start"}`}>
           {message.text && (
-            <View className={bubbleVariants({ from: message.from })}>
-              <Typography
-                variant="small"
-                className={bubbleTextVariants({ from: message.from })}
-                style={{ lineHeight: 20 }}
-              >
+            <View className={bubbleVariants({ from: side })}>
+              <Typography variant="small" className={bubbleTextVariants({ from: side })} style={{ lineHeight: 20 }}>
                 {message.text}
               </Typography>
             </View>
           )}
-          <ProductBubble product={message.product} from={message.from} />
+          {message.productId && <ProductBubble productId={message.productId} isMe={isMe} />}
         </View>
       )}
 
-      {message.kind === "order" && message.order && (
+      {/* Order card */}
+      {message.kind === "order" && (
         <View className={`gap-1.5 ${isMe ? "items-end" : "items-start"}`}>
           {message.text && (
-            <View className={bubbleVariants({ from: message.from })}>
-              <Typography
-                variant="small"
-                className={bubbleTextVariants({ from: message.from })}
-                style={{ lineHeight: 20 }}
-              >
+            <View className={bubbleVariants({ from: side })}>
+              <Typography variant="small" className={bubbleTextVariants({ from: side })} style={{ lineHeight: 20 }}>
                 {message.text}
               </Typography>
             </View>
           )}
-          <OrderBubble order={message.order} from={message.from} />
+          {message.orderId && <OrderBubble orderId={message.orderId} isMe={isMe} />}
         </View>
       )}
 
       {/* Timestamp + read receipt */}
       <View className={`mt-0.5 flex-row items-center gap-1 ${isMe ? "flex-row-reverse" : ""}`}>
         <Typography variant="caption" tone="muted" style={{ fontSize: 10 }}>
-          {message.time}
+          {formatTime(message.createdAt)}
         </Typography>
         {isMe && (
           <Ionicons
-            name={message.read ? "checkmark-done" : "checkmark"}
+            name={message.readAt ? "checkmark-done" : "checkmark"}
             size={13}
-            color={message.read ? BRAND.mid : "#9CAA8E"}
+            color={message.readAt ? BRAND.mid : "#9CAA8E"}
           />
         )}
       </View>
@@ -325,25 +288,44 @@ function MessageRow({ message }: { message: Message }) {
   );
 }
 
+// ─── Messages Skeleton ────────────────────────────────────────────────────────
+
+function MessagesSkeleton() {
+  return (
+    <View className="gap-4 px-4 pt-4">
+      {[
+        { isMe: false, width: "70%" },
+        { isMe: true, width: "55%" },
+        { isMe: false, width: "80%" },
+        { isMe: false, width: "50%" },
+        { isMe: true, width: "65%" },
+      ].map((s, i) => (
+        <View key={i} className={`${s.isMe ? "items-end" : "items-start"}`}>
+          <View className="h-10 rounded-2xl bg-default opacity-60" style={{ width: s.width as any }} />
+        </View>
+      ))}
+    </View>
+  );
+}
+
 // ─── Chat Input ───────────────────────────────────────────────────────────────
 
-function ChatInput({ onSend }: { onSend: (text: string) => void }) {
+function ChatInput({ onSend, isSending }: { onSend: (text: string) => void; isSending: boolean }) {
   const [text, setText] = useState("");
   const colors = useThemeColors();
   const inputRef = useRef<TextInput>(null);
 
   const handleSend = () => {
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed || isSending) return;
     onSend(trimmed);
     setText("");
   };
 
-  const canSend = text.trim().length > 0;
+  const canSend = text.trim().length > 0 && !isSending;
 
   return (
     <View className="flex-row items-end gap-2 border-t border-border bg-surface px-3 py-3">
-      {/* Attachment */}
       <TouchableOpacity
         className="mb-0.5 h-9 w-9 items-center justify-center rounded-full bg-default"
         activeOpacity={0.7}
@@ -351,7 +333,6 @@ function ChatInput({ onSend }: { onSend: (text: string) => void }) {
         <Ionicons name="add" size={22} color="#1A3A0A" />
       </TouchableOpacity>
 
-      {/* Input field */}
       <View className="flex-1 flex-row items-end gap-2 rounded-2xl bg-default px-4 py-2.5">
         <TextInput
           ref={inputRef}
@@ -370,16 +351,15 @@ function ChatInput({ onSend }: { onSend: (text: string) => void }) {
             lineHeight: 20,
           }}
         />
-        {/* Emoji shortcut */}
         <TouchableOpacity activeOpacity={0.7} className="mb-0.5">
           <Ionicons name="happy-outline" size={20} color={colors.muted} />
         </TouchableOpacity>
       </View>
 
-      {/* Send / Mic toggle */}
       <TouchableOpacity
         onPress={handleSend}
         activeOpacity={0.85}
+        disabled={!canSend}
         className="mb-0.5 h-10 w-10 items-center justify-center rounded-full"
         style={{ backgroundColor: canSend ? BRAND.dark : "#E8EDE4" }}
       >
@@ -393,43 +373,104 @@ function ChatInput({ onSend }: { onSend: (text: string) => void }) {
 
 export function ChatScreen({ conversationId }: { conversationId: string }) {
   const insets = useSafeAreaInsets();
-  const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const scrollRef = useRef<ScrollView>(null);
+
+  // ── Queries ───────────────────────────────────────────────────────────────
+
+  const messagesQueryOptions = trpc.conversations.messages.queryOptions({ conversationId });
+  const { data: messages = [], isPending: messagesPending } = useQuery(messagesQueryOptions);
+
+  // Derive producerId from the conversation list cached by MessagesScreen
+  const { data: conversations = [] } = useQuery(trpc.conversations.list.queryOptions({ userId: CURRENT_USER_ID }));
+  const conversation = conversations.find((c) => c.id === conversationId);
+  const producerId = conversation?.producerId;
+
+  const { data: producer } = useQuery(
+    trpc.producers.get.queryOptions({ id: producerId ?? "" }, { enabled: !!producerId }),
+  );
+
+  // ── Refresh on focus ──────────────────────────────────────────────────────
+
+  useRefreshOnFocus(messagesQueryOptions.queryKey);
+
+  // ── Mark as read on mount ─────────────────────────────────────────────────
+
+  const markReadMutation = useMutation(trpc.conversations.markRead.mutationOptions());
+
+  useEffect(() => {
+    markReadMutation.mutate({ conversationId, userId: CURRENT_USER_ID });
+    // Only run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId]);
+
+  // ── Send message mutation ─────────────────────────────────────────────────
+
+  const sendMutation = useMutation(
+    trpc.conversations.send.mutationOptions({
+      onSuccess: () => {
+        queryClient.invalidateQueries(messagesQueryOptions);
+        // Scroll to bottom after new message
+        setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+      },
+    }),
+  );
+
+  // ── Scroll to bottom when messages load ───────────────────────────────────
+
+  useEffect(() => {
+    if (messages.length > 0) {
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: false }), 50);
+    }
+  }, [messages.length]);
+
+  // ── Handlers ──────────────────────────────────────────────────────────────
 
   const handleSend = (text: string) => {
-    const newMsg: Message = {
-      id: String(Date.now()),
-      from: "me",
+    sendMutation.mutate({
+      conversationId,
+      senderId: CURRENT_USER_ID,
       kind: "text",
       text,
-      time: new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
-      read: false,
-    };
-    setMessages((prev) => [...prev, newMsg]);
+    });
   };
+
+  // ── Group messages by date ────────────────────────────────────────────────
+
+  const dateLabel =
+    messages.length > 0
+      ? new Date(messages[0].createdAt).toLocaleDateString("pt-BR", {
+          weekday: "long",
+          day: "2-digit",
+          month: "long",
+        })
+      : "Hoje";
 
   return (
     <View className="flex-1 bg-background">
-      {/* Fixed top bar with safe area */}
+      {/* Fixed top bar — safe area applied here */}
       <View style={{ paddingTop: insets.top }} className="bg-surface">
-        <TopBar producer={PRODUCER} />
+        <TopBar producer={producer} />
       </View>
 
-      {/* StickyFooterFormScrollView: body scrolls, footer sticks above keyboard */}
+      {/* Body scrolls, footer sticks above keyboard */}
       <StickyFooterFormScrollView.Root>
-        <StickyFooterFormScrollView.Body
-          className="flex-1 bg-background px-0"
-          contentContainerClassName="pt-2 pb-4"
-          // Inverted would be ideal for chat but requires reversing the data array;
-          // instead we scroll to end after each new message via ref if needed.
-        >
-          <DateSeparator label={DATE_LABEL} />
-          {messages.map((msg) => (
-            <MessageRow key={msg.id} message={msg} />
-          ))}
+        <StickyFooterFormScrollView.Body className="flex-1 bg-background px-0" contentContainerClassName="pt-2 pb-4">
+          {messagesPending ? (
+            <MessagesSkeleton />
+          ) : (
+            <>
+              <DateSeparator label={dateLabel} />
+              {messages.map((msg) => (
+                <MessageRow key={msg.id} message={msg} />
+              ))}
+            </>
+          )}
         </StickyFooterFormScrollView.Body>
 
         <StickyFooterFormScrollView.Footer stickToKeyboard>
-          <ChatInput onSend={handleSend} />
+          <ChatInput onSend={handleSend} isSending={sendMutation.isPending} />
           <View style={{ height: insets.bottom }} className="bg-surface" />
         </StickyFooterFormScrollView.Footer>
       </StickyFooterFormScrollView.Root>

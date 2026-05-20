@@ -1,4 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
+import { useQuery } from "@tanstack/react-query";
+import { router } from "expo-router";
 import React, { useState } from "react";
 import { TextInput, TouchableOpacity, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -7,6 +9,10 @@ import { tv } from "tailwind-variants";
 import { StandardScrollView } from "@/components/ui/screen-containers/standard-scroll-view";
 import { Typography } from "@/components/ui/typography";
 import { useThemeColors } from "@/hooks/use-theme-colors";
+import { useTRPC } from "@/lib/trpc";
+
+import type { Category } from "../../server/trpc/routers/categories";
+import type { Product } from "../../server/trpc/routers/products";
 
 // ─── Brand tokens ─────────────────────────────────────────────────────────────
 
@@ -16,18 +22,7 @@ const BRAND = {
   soft: "#E8F5E2",
 } as const;
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
-
-const CATEGORIES = [
-  { id: "vegetables", label: "Hortaliças", icon: "leaf-outline", bg: "#E8F5E9", color: "#2E7D32" },
-  { id: "fruits", label: "Frutas", icon: "nutrition-outline", bg: "#FFF9C4", color: "#F57F17" },
-  { id: "organic", label: "Orgânicos", icon: "flower-outline", bg: "#F3E5F5", color: "#6A1B9A" },
-  { id: "grains", label: "Grãos e Cereais", icon: "cube-outline", bg: "#EFEBE9", color: "#4E342E" },
-  { id: "dairy", label: "Laticínios", icon: "water-outline", bg: "#E3F2FD", color: "#1565C0" },
-  { id: "artisanal", label: "Artesanal", icon: "ribbon-outline", bg: "#FFF3E0", color: "#E65100" },
-  { id: "roots", label: "Raízes e Tubérculos", icon: "git-branch-outline", bg: "#FBE9E7", color: "#BF360C" },
-  { id: "producers", label: "Produtores", icon: "people-outline", bg: "#E8F5E2", color: "#2D5A1B" },
-] as const;
+// ─── Static data (editorial, not from API) ────────────────────────────────────
 
 const TRENDING = [
   "Alface orgânica",
@@ -38,97 +33,37 @@ const TRENDING = [
   "Coentro",
 ] as const;
 
-const RECENT_SEARCHES = ["Alface crespa", "Frutas da estação", "João Silva"] as const;
+const SORT_OPTIONS = ["Relevância", "Menor preço", "Maior avaliação", "Mais recentes"] as const;
+type SortOption = (typeof SORT_OPTIONS)[number];
 
-type ProductTag = "Orgânico" | "Artesanal" | "Produção Local";
+// ─── Tag display config (client-only) ─────────────────────────────────────────
 
-const RESULTS: {
-  id: string;
-  name: string;
-  producer: string;
-  price: string;
-  unit: string;
-  tag: ProductTag;
-  emoji: string;
-  cardBg: string;
-  rating: number;
-}[] = [
-  {
-    id: "1",
-    name: "Alface Crespa Orgânica",
-    producer: "João Silva",
-    price: "R$ 4,00",
-    unit: "unid.",
-    tag: "Orgânico",
-    emoji: "🥬",
-    cardBg: "#E8F5E9",
-    rating: 4.9,
-  },
-  {
-    id: "2",
-    name: "Frutas da Estação",
-    producer: "Antônio Lima",
-    price: "R$ 6,00",
-    unit: "kg",
-    tag: "Orgânico",
-    emoji: "🍊",
-    cardBg: "#FFF9C4",
-    rating: 4.8,
-  },
-  {
-    id: "3",
-    name: "Melado de Cana",
-    producer: "Mulheres do Campo",
-    price: "R$ 10,00",
-    unit: "unid.",
-    tag: "Artesanal",
-    emoji: "🍯",
-    cardBg: "#FFF3E0",
-    rating: 4.9,
-  },
-  {
-    id: "4",
-    name: "Feijão e Farinha",
-    producer: "Maria Oliveira",
-    price: "R$ 8,00",
-    unit: "kg",
-    tag: "Produção Local",
-    emoji: "🫘",
-    cardBg: "#EFEBE9",
-    rating: 4.7,
-  },
-  {
-    id: "5",
-    name: "Tomate Orgânico",
-    producer: "Pedro Santos",
-    price: "R$ 5,00",
-    unit: "kg",
-    tag: "Orgânico",
-    emoji: "🍅",
-    cardBg: "#FFEBEE",
-    rating: 4.6,
-  },
-  {
-    id: "6",
-    name: "Macaxeira Fresca",
-    producer: "Lúcia Ferreira",
-    price: "R$ 3,50",
-    unit: "kg",
-    tag: "Produção Local",
-    emoji: "🥔",
-    cardBg: "#FFF8E1",
-    rating: 4.8,
-  },
-];
-
-const PRODUCT_TAG_CONFIG: Record<ProductTag, { bg: string; color: string; icon: string }> = {
+const PRODUCT_TAG_CONFIG: Record<string, { bg: string; color: string; icon: string }> = {
   Orgânico: { bg: "#E8F5E9", color: "#2E7D32", icon: "leaf" },
   Artesanal: { bg: "#FFF3E0", color: "#E65100", icon: "person" },
   "Produção Local": { bg: "#F3E5F5", color: "#6A1B9A", icon: "home" },
+  Agroecológico: { bg: "#E8F5E9", color: "#1B5E20", icon: "leaf" },
+  "Sem Agrotóxico": { bg: "#F1F8E9", color: "#33691E", icon: "leaf" },
 };
 
-const SORT_OPTIONS = ["Relevância", "Menor preço", "Maior avaliação", "Mais recentes"] as const;
-type SortOption = (typeof SORT_OPTIONS)[number];
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function formatPrice(cents: number) {
+  return (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+function sortProducts(products: Product[], sortBy: SortOption): Product[] {
+  switch (sortBy) {
+    case "Menor preço":
+      return [...products].sort((a, b) => a.priceCents - b.priceCents);
+    case "Maior avaliação":
+      return [...products]; // ratings come from producers; sort kept stable for now
+    case "Mais recentes":
+      return [...products].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    default:
+      return products;
+  }
+}
 
 // ─── Variants ─────────────────────────────────────────────────────────────────
 
@@ -150,12 +85,14 @@ function SearchInput({
   onChangeText,
   onClear,
   onFocus,
+  onSubmit,
   focused,
 }: {
   query: string;
   onChangeText: (t: string) => void;
   onClear: () => void;
   onFocus: () => void;
+  onSubmit: () => void;
   focused: boolean;
 }) {
   const colors = useThemeColors();
@@ -168,6 +105,7 @@ function SearchInput({
           value={query}
           onChangeText={onChangeText}
           onFocus={onFocus}
+          onSubmitEditing={onSubmit}
           placeholder="Buscar produtos, produtores..."
           placeholderTextColor={colors.muted}
           returnKeyType="search"
@@ -203,8 +141,18 @@ function SectionLabel({ label }: { label: string }) {
 
 // ─── Recent Searches ──────────────────────────────────────────────────────────
 
-function RecentSearches({ onSelect, onClearAll }: { onSelect: (q: string) => void; onClearAll: () => void }) {
+function RecentSearches({
+  searches,
+  onSelect,
+  onClearAll,
+}: {
+  searches: string[];
+  onSelect: (q: string) => void;
+  onClearAll: () => void;
+}) {
   const colors = useThemeColors();
+
+  if (searches.length === 0) return null;
 
   return (
     <View className="mt-5 gap-3">
@@ -217,12 +165,12 @@ function RecentSearches({ onSelect, onClearAll }: { onSelect: (q: string) => voi
         </TouchableOpacity>
       </View>
       <View className="border-y border-border bg-surface">
-        {RECENT_SEARCHES.map((search, i) => (
+        {searches.map((search, i) => (
           <TouchableOpacity
             key={search}
             onPress={() => onSelect(search)}
             activeOpacity={0.7}
-            className={`flex-row items-center gap-3 px-4 py-3.5 ${i < RECENT_SEARCHES.length - 1 ? "border-b border-border" : ""}`}
+            className={`flex-row items-center gap-3 px-4 py-3.5 ${i < searches.length - 1 ? "border-b border-border" : ""}`}
           >
             <Ionicons name="time-outline" size={18} color={colors.muted} />
             <Typography variant="small" style={{ flex: 1 }}>
@@ -268,19 +216,25 @@ function TrendingSearches({ onSelect }: { onSelect: (q: string) => void }) {
   );
 }
 
-// ─── Category Grid ────────────────────────────────────────────────────────────
+// ─── Category Grid — data from API ───────────────────────────────────────────
 
-function CategoryGrid({ onSelect }: { onSelect: (id: string) => void }) {
+function CategoryGrid({
+  categories,
+  onSelect,
+}: {
+  categories: Category[];
+  onSelect: (categoryId: string, label: string) => void;
+}) {
   return (
     <View className="mt-6 gap-3">
       <View className="px-4">
         <SectionLabel label="Explorar categorias" />
       </View>
       <View className="flex-row flex-wrap gap-3 px-4">
-        {CATEGORIES.map((cat) => (
+        {categories.map((cat) => (
           <TouchableOpacity
             key={cat.id}
-            onPress={() => onSelect(cat.id)}
+            onPress={() => onSelect(cat.id, cat.label)}
             activeOpacity={0.8}
             className="w-[47%] flex-row items-center gap-3 rounded-2xl border border-border bg-surface px-3.5 py-3"
             style={{
@@ -291,7 +245,10 @@ function CategoryGrid({ onSelect }: { onSelect: (id: string) => void }) {
               elevation: 1,
             }}
           >
-            <View className="h-10 w-10 items-center justify-center rounded-xl" style={{ backgroundColor: cat.bg }}>
+            <View
+              className="h-10 w-10 items-center justify-center rounded-xl"
+              style={{ backgroundColor: cat.color + "22" }}
+            >
               <Ionicons name={cat.icon as any} size={20} color={cat.color} />
             </View>
             <Typography variant="small" style={{ flex: 1, fontWeight: "600", color: "#1A3A0A" }}>
@@ -304,25 +261,48 @@ function CategoryGrid({ onSelect }: { onSelect: (id: string) => void }) {
   );
 }
 
+// ─── Category Grid Skeleton ───────────────────────────────────────────────────
+
+function CategoryGridSkeleton() {
+  return (
+    <View className="mt-6 gap-3">
+      <View className="mx-4 h-5 w-40 rounded-lg bg-default opacity-60" />
+      <View className="flex-row flex-wrap gap-3 px-4">
+        {[1, 2, 3, 4, 5, 6].map((i) => (
+          <View key={i} className="h-14 w-[47%] rounded-2xl bg-default opacity-50" />
+        ))}
+      </View>
+    </View>
+  );
+}
+
 // ─── Sort Bar ─────────────────────────────────────────────────────────────────
 
 function SortBar({
   active,
   onSelect,
   total,
+  isPending,
 }: {
   active: SortOption;
   onSelect: (s: SortOption) => void;
   total: number;
+  isPending: boolean;
 }) {
   return (
     <View className="gap-2 border-b border-border pt-3 pb-1">
       <View className="flex-row items-center justify-between px-4">
         <Typography variant="caption" tone="muted">
-          <Typography variant="caption" style={{ fontWeight: "700", color: "#1A3A0A" }}>
-            {total}
-          </Typography>{" "}
-          resultados encontrados
+          {isPending ? (
+            "Buscando..."
+          ) : (
+            <>
+              <Typography variant="caption" style={{ fontWeight: "700", color: "#1A3A0A" }}>
+                {total}
+              </Typography>{" "}
+              resultados encontrados
+            </>
+          )}
         </Typography>
         <TouchableOpacity className="flex-row items-center gap-1" activeOpacity={0.7}>
           <Ionicons name="options-outline" size={15} color={BRAND.mid} />
@@ -331,10 +311,7 @@ function SortBar({
           </Typography>
         </TouchableOpacity>
       </View>
-      <View
-        className="flex-row gap-2 px-4 pb-2"
-        // horizontal scroll workaround without extra ScrollView import
-      >
+      <View className="flex-row gap-2 px-4 pb-2">
         {SORT_OPTIONS.map((opt) => (
           <TouchableOpacity
             key={opt}
@@ -360,55 +337,54 @@ function SortBar({
 
 // ─── Result Card ──────────────────────────────────────────────────────────────
 
-function ResultCard({ result }: { result: (typeof RESULTS)[number] }) {
+function ResultCard({ product }: { product: Product }) {
   const [favorited, setFavorited] = useState(false);
-  const tag = PRODUCT_TAG_CONFIG[result.tag];
+  const primaryTag = product.tags[0] ?? "";
+  const tag = PRODUCT_TAG_CONFIG[primaryTag] ?? { bg: "#F5F5F5", color: "#666", icon: "pricetag" };
 
   return (
     <TouchableOpacity
+      onPress={() => router.push({ pathname: "/product/[id]", params: { id: product.id } })}
       activeOpacity={0.85}
       className="flex-row items-center gap-3 border-b border-border bg-surface px-4 py-3"
     >
       {/* Image */}
       <View
         className="h-[72px] w-[72px] shrink-0 items-center justify-center rounded-xl"
-        style={{ backgroundColor: result.cardBg }}
+        style={{ backgroundColor: product.cardBg }}
       >
-        <Typography style={{ fontSize: 36 }}>{result.emoji}</Typography>
+        <Typography style={{ fontSize: 36 }}>{product.emoji}</Typography>
       </View>
 
       {/* Info */}
       <View className="flex-1 gap-0.5">
         <Typography variant="smallBold" numberOfLines={1} style={{ color: "#1A3A0A" }}>
-          {result.name}
+          {product.name}
         </Typography>
 
         <View className="flex-row items-center gap-1">
           <Ionicons name="person-outline" size={11} color="#6B7F5E" />
           <Typography variant="caption" tone="muted" truncate>
-            {result.producer}
-          </Typography>
-        </View>
-
-        <View className="mt-0.5 flex-row items-center gap-1">
-          <Ionicons name="star" size={11} color="#F59E0B" />
-          <Typography variant="caption" style={{ fontWeight: "700", color: "#1A3A0A" }}>
-            {result.rating}
+            {product.categoryLabel}
           </Typography>
         </View>
 
         <View className="mt-1 flex-row items-center justify-between">
-          <View className="flex-row items-center gap-1 rounded-md px-2 py-0.5" style={{ backgroundColor: tag.bg }}>
-            <Ionicons name={tag.icon as any} size={10} color={tag.color} />
-            <Typography variant="caption" style={{ color: tag.color, fontWeight: "600" }}>
-              {result.tag}
-            </Typography>
-          </View>
+          {primaryTag ? (
+            <View className="flex-row items-center gap-1 rounded-md px-2 py-0.5" style={{ backgroundColor: tag.bg }}>
+              <Ionicons name={tag.icon as any} size={10} color={tag.color} />
+              <Typography variant="caption" style={{ color: tag.color, fontWeight: "600" }}>
+                {primaryTag}
+              </Typography>
+            </View>
+          ) : (
+            <View />
+          )}
           <Typography variant="smallBold" style={{ color: BRAND.dark }}>
-            {result.price}
+            {formatPrice(product.priceCents)}
             <Typography variant="caption" tone="muted">
               {" "}
-              / {result.unit}
+              / {product.unit}
             </Typography>
           </Typography>
         </View>
@@ -423,6 +399,25 @@ function ResultCard({ result }: { result: (typeof RESULTS)[number] }) {
         <Ionicons name={favorited ? "heart" : "heart-outline"} size={17} color={favorited ? "#EF4444" : "#9CAA8E"} />
       </TouchableOpacity>
     </TouchableOpacity>
+  );
+}
+
+// ─── Results skeleton ─────────────────────────────────────────────────────────
+
+function ResultsSkeleton() {
+  return (
+    <>
+      {[1, 2, 3, 4].map((i) => (
+        <View key={i} className="flex-row items-center gap-3 border-b border-border bg-surface px-4 py-3">
+          <View className="h-[72px] w-[72px] rounded-xl bg-default opacity-60" />
+          <View className="flex-1 gap-2">
+            <View className="h-4 w-3/4 rounded-lg bg-default opacity-60" />
+            <View className="h-3 w-1/2 rounded-lg bg-default opacity-50" />
+            <View className="h-3 w-1/3 rounded-lg bg-default opacity-40" />
+          </View>
+        </View>
+      ))}
+    </>
   );
 }
 
@@ -450,30 +445,60 @@ function EmptyResults({ query }: { query: string }) {
 
 export function SearchScreen() {
   const insets = useSafeAreaInsets();
+  const trpc = useTRPC();
+
   const [query, setQuery] = useState("");
   const [focused, setFocused] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [sortBy, setSortBy] = useState<SortOption>("Relevância");
 
-  const isSearching = query.length > 0;
-  const showResults = submitted && isSearching;
+  // Recent searches are kept in local state for the MVP
+  // (in a future iteration these can be persisted with AsyncStorage)
+  const [recentSearches, setRecentSearches] = useState<string[]>(["Alface crespa", "Frutas da estação"]);
 
-  const filteredResults = showResults
-    ? RESULTS.filter(
-        (r) =>
-          r.name.toLowerCase().includes(query.toLowerCase()) || r.producer.toLowerCase().includes(query.toLowerCase()),
-      )
-    : [];
+  const showResults = submitted && query.length > 0;
+
+  // ── Queries ───────────────────────────────────────────────────────────────
+
+  const categoriesQueryOptions = trpc.categories.list.queryOptions();
+  const { data: categories = [], isPending: categoriesPending } = useQuery(categoriesQueryOptions);
+
+  // Products search — only fires when there is an active search term
+  const searchQueryOptions = trpc.products.list.queryOptions(
+    { search: query, activeOnly: true },
+    { enabled: showResults },
+  );
+  const { data: rawResults = [], isPending: searchPending } = useQuery(searchQueryOptions);
+
+  // ── Derived data ──────────────────────────────────────────────────────────
+
+  const sortedResults = sortProducts(rawResults, sortBy);
+
+  // ── Handlers ─────────────────────────────────────────────────────────────
 
   const handleSelect = (term: string) => {
     setQuery(term);
     setSubmitted(true);
     setFocused(false);
+    setRecentSearches((prev) => [term, ...prev.filter((s) => s !== term)].slice(0, 5));
+  };
+
+  const handleSubmit = () => {
+    if (!query.trim()) return;
+    setSubmitted(true);
+    setFocused(false);
+    setRecentSearches((prev) => [query, ...prev.filter((s) => s !== query)].slice(0, 5));
   };
 
   const handleClear = () => {
     setQuery("");
     setSubmitted(false);
+    setFocused(false);
+  };
+
+  const handleCategorySelect = (categoryId: string, label: string) => {
+    setQuery(label);
+    setSubmitted(true);
     setFocused(false);
   };
 
@@ -489,28 +514,41 @@ export function SearchScreen() {
           }}
           onClear={handleClear}
           onFocus={() => setFocused(true)}
+          onSubmit={handleSubmit}
           focused={focused}
         />
       </View>
 
       {/* Scrollable content */}
       <StandardScrollView contentContainerClassName="pb-6" keyboardShouldPersistTaps="handled">
+        {/* ── Results state ── */}
         {showResults && (
           <>
-            <SortBar active={sortBy} onSelect={setSortBy} total={filteredResults.length} />
-            {filteredResults.length > 0 ? (
-              filteredResults.map((r) => <ResultCard key={r.id} result={r} />)
+            <SortBar active={sortBy} onSelect={setSortBy} total={sortedResults.length} isPending={searchPending} />
+            {searchPending ? (
+              <ResultsSkeleton />
+            ) : sortedResults.length > 0 ? (
+              sortedResults.map((r) => <ResultCard key={r.id} product={r} />)
             ) : (
               <EmptyResults query={query} />
             )}
           </>
         )}
 
+        {/* ── Discovery state ── */}
         {!showResults && (
           <>
-            <RecentSearches onSelect={handleSelect} onClearAll={() => {}} />
+            <RecentSearches
+              searches={recentSearches}
+              onSelect={handleSelect}
+              onClearAll={() => setRecentSearches([])}
+            />
             <TrendingSearches onSelect={handleSelect} />
-            <CategoryGrid onSelect={(id) => console.log("category:", id)} />
+            {categoriesPending ? (
+              <CategoryGridSkeleton />
+            ) : (
+              <CategoryGrid categories={categories} onSelect={handleCategorySelect} />
+            )}
           </>
         )}
       </StandardScrollView>
